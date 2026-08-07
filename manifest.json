@@ -1,18 +1,16 @@
-[
-  {
-    "id": "kuronime-provider",
-    "name": "Kuronime Anime",
-    "description": "Nonton Kuronime Sub Indo lancar jaya",
-    "version": "1.0.0",
-    "author": "noobjasmara",
-    "supportedTypes": [
-      "movie",
-      "tv"
-    ],
-    "filename": "providers/kuronime.js",
-    "enabled": true,
-    "contentLanguage": [
-      "id"
-    ]
-  }
-]
+{
+  "id": "kuronime-provider",
+  "name": "Kuronime Anime",
+  "description": "Nonton Kuronime Sub Indo lancar jaya",
+  "version": "1.0.0",
+  "author": "noobjasmara",
+  "supportedTypes": [
+    "tv",
+    "movie"
+  ],
+  "filename": "providers/kuronime.js",
+  "contentLanguage": [
+    "id"
+  ],
+  "enabled": true
+}
