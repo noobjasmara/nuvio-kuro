@@ -1,0 +1,18 @@
+{
+  "name": "Nuvio Kuronime",
+  "description": "Kumpulan plugin Nuvio noobjasmara",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "kuronime-provider",
+      "name": "Kuronime Anime",
+      "description": "Nonton Kuronime Sub Indo lancar jaya",
+      "version": "1.0.0",
+      "author": "noobjasmara",
+      "supportedTypes": [ "tv", "movie" ],
+      "filename": "providers/kuronime.js",
+      "contentLanguage": [ "id" ],
+      "enabled": true
+    }
+  ]
+}
