@@ -1,6 +1,7 @@
 {
   "name": "Repo Nuvio Pribadi",
   "description": "Kumpulan plugin Nuvio milik gw",
+  "version": "1.0.0",
   "providers": [
     {
       "id": "kuronime-provider",
