@@ -1,11 +1,17 @@
 {
-  "id": "kuronime-provider",
-  "name": "Kuronime Anime",
-  "description": "Indonesian subtitle anime streaming provider parsed natively from Kuronime.",
-  "version": "1.0.0",
-  "author": "Developer",
-  "supportedTypes": ["tv", "movie"],
-  "filename": "providers/kuronime.js",
-  "contentLanguage": ["id"],
-  "enabled": true
+  "name": "Repo Nuvio Pribadi",
+  "description": "Kumpulan plugin Nuvio milik gw",
+  "providers": [
+    {
+      "id": "kuronime-provider",
+      "name": "Kuronime Anime",
+      "description": "Indonesian subtitle anime streaming provider parsed natively from Kuronime.",
+      "version": "1.0.0",
+      "author": "noobjasmara",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/kuronime.js",
+      "contentLanguage": ["id"],
+      "enabled": true
+    }
+  ]
 }
