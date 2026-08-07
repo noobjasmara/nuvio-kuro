@@ -2,7 +2,7 @@
   "name": "Nuvio Kuronime",
   "description": "Kumpulan plugin Nuvio noobjasmara",
   "version": "1.0.0",
-  "providers": [
+  "scrapers": [
     {
       "id": "kuronime-provider",
       "name": "Kuronime Anime",
