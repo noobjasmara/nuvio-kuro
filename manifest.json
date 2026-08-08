@@ -1,16 +1,16 @@
 {
   "name": "Kuronime Repo",
   "author": "noobjasmara",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "scrapers": [
     {
       "id": "nuvio-kuro",
       "name": "Kuronime",
       "description": "Nonton Anime Sub Indo dari Kuronime",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "author": "noobjasmara",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/kuronime.js",
+      "filename": "providers/kuronime-v2.js",
       "enabled": true,
       "logo": "http://154.203.162.226/favicon.ico",
       "contentLanguage": ["id"],
