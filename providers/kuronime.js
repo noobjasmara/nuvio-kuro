@@ -1,362 +1,241 @@
-// Kuronime Provider for Nuvio (Production-Grade Promise-based)
+/*
+ * Kuronime Provider for Nuvio (Promise-based, Hermes Compatible)
+ * Built with exact selectors parsed from audit.js
+ */
+
 const cheerio = require('cheerio-without-node-native');
 const CryptoJS = require('crypto-js');
 
-const PRIMARY_IP = '154.203.162.226';
-const FALLBACK_IP = '154.203.167.220';
-const TMDB_API_KEY = '844132b4db1b13101217e57c1d1a8123';
-const MIRROR_PASSWORD = '3&!Z0M,VIZ;dZW==';
+const BASE_URL = 'https://154.203.167.220';
+const MIRROR_PASSWORD = "3&!Z0M,VIZ;dZW==";
 
-function log(msg) {
-  console.log(`[Kuronime] ${msg}`);
+function hexToBytes(hex) {
+  const bytes = [];
+  for (let c = 0; c < hex.length; c += 2) {
+    bytes.push(parseInt(hex.substr(c, 2), 16));
+  }
+  return bytes;
 }
 
-function fetchPageWithFallback(path) {
-  const primaryUrl = `http://${PRIMARY_IP}${path}`;
-  const fallbackUrl = `http://${FALLBACK_IP}${path}`;
-  
-  log(`Attempting fetch from: ${primaryUrl}`);
-  return fetch(primaryUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+function evpBytesToKey(password, salt, keyLength) {
+  const digest = CryptoJS.algo.MD5.create();
+  const generated = [];
+  let block = [];
+  while (generated.length < keyLength) {
+    digest.reset();
+    if (block.length > 0) {
+      const blockWords = CryptoJS.lib.WordArray.create(new Uint8Array(block));
+      digest.update(blockWords);
     }
-  })
-  .then(res => {
-    if (!res.ok) throw new Error(`Status ${res.status}`);
-    return res.text();
-  })
-  .catch(err => {
-    log(`Primary IP failed, trying fallback IP... (${err.message})`);
-    return fetch(fallbackUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    })
-    .then(res => {
-      if (!res.ok) throw new Error(`Fallback Status ${res.status}`);
-      return res.text();
-    });
-  });
+    const passWords = CryptoJS.lib.WordArray.create(new Uint8Array(password));
+    const saltWords = CryptoJS.lib.WordArray.create(new Uint8Array(salt));
+    digest.update(passWords);
+    digest.update(saltWords);
+    const hash = digest.finalize();
+    
+    const u8 = new Uint8Array(hash.sigBytes);
+    for (let i = 0; i < hash.sigBytes; i++) {
+      u8[i] = (hash.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    }
+    const hashBytes = Array.from(u8);
+    generated.push(...hashBytes);
+    block = hashBytes;
+  }
+  return generated.slice(0, keyLength);
 }
 
-function decryptPayload(encodedData, password) {
+function decryptAES(encryptedBase64, saltHex, ivHex) {
   try {
-    const wrapperStr = CryptoJS.enc.Base64.parse(encodedData).toString(CryptoJS.enc.Utf8);
-    const wrapper = JSON.parse(wrapperStr);
+    const salt = hexToBytes(saltHex);
+    const ivBytes = hexToBytes(ivHex);
+    const passBytes = Array.from(new TextEncoder().encode(MIRROR_PASSWORD));
     
-    const ct = wrapper.ct;
-    const iv = CryptoJS.enc.Hex.parse(wrapper.iv);
-    const salt = CryptoJS.enc.Hex.parse(wrapper.s);
+    const keyBytes = evpBytesToKey(passBytes, salt, 32);
     
-    const key = CryptoJS.EvpKDF(password, salt, {
-      keySize: 8,
-      iterations: 1,
-      hasher: CryptoJS.algo.MD5
-    });
+    const key = CryptoJS.lib.WordArray.create(new Uint8Array(keyBytes));
+    const iv = CryptoJS.lib.WordArray.create(new Uint8Array(ivBytes));
+    const ciphertext = CryptoJS.enc.Base64.parse(encryptedBase64);
     
     const decrypted = CryptoJS.AES.decrypt(
-      ct,
+      { ciphertext: ciphertext },
       key,
-      {
-        iv: iv,
-        mode: CryptoJS.mode.CBC,
-        padding: CryptoJS.pad.Pkcs7
-      }
+      { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
     );
     
     return decrypted.toString(CryptoJS.enc.Utf8);
   } catch (e) {
-    console.error('[Kuronime] Decryption failed:', e.message);
+    console.error("[Kuronime] Decryption error: " + e.message);
     return null;
   }
 }
 
-function findBestMatch(links, seasonNum, episodeNum, tmdbType) {
-  if (tmdbType === 'movie') {
-    return links[0] || null;
-  }
-  
-  const epPatterns = [
-    new RegExp(`(?:ep|episode|eps|\\b)\\s*0*${episodeNum}\\b`, 'i'),
-    new RegExp(`\\b0*${episodeNum}\\b`, 'i')
-  ];
-  
-  for (const pattern of epPatterns) {
-    for (const link of links) {
-      if (pattern.test(link.title)) {
-        return link;
-      }
-    }
-  }
-  return links[0] || null;
-}
-
-function isStreamHost(url) {
-  const u = url.toLowerCase();
-  return u.includes('sibnet.ru') || u.includes('vidmoly.') || u.includes('uqload.') || 
-         u.includes('voe.') || u.includes('streamtape.') || u.includes('dood.') || 
-         u.includes('filemoon.') || u.includes('sendvid.') || u.includes('megaplay.') || 
-         u.includes('lecteurvideo.') || u.includes('zencloudz.') || u.includes('younetu.') ||
-         u.includes('blogger.com') || u.includes('blogspot.com') || u.includes('pixeldrain.') ||
-         u.includes('ok.ru') || u.includes('mp4upload.') || u.includes('gembed') || u.includes('player');
-}
-
-function getDomainName(url) {
-  const match = url.match(/https?:\/\/([^\/]+)/i);
-  return match ? match[1] : 'Direct';
-}
-
-function cleanTitle(title) {
-  return title.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-}
-
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+function getStreams(tmdbId, mediaType, season, episode) {
   return new Promise((resolve, reject) => {
-    log(`Starting lookup for ID: ${tmdbId} (${mediaType}) Season: ${seasonNum} Episode: ${episodeNum}`);
+    console.log("[Kuronime] Memulai pencarian TMDB ID: " + tmdbId);
     
-    const tmdbType = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-    const tmdbUrl = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-    
-    fetch(tmdbUrl)
+    // 1. Ambil judul asli dari TMDB
+    fetch("https://api.themoviedb.org/3/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=439c478a771f35c05022f9feabcca01c")
       .then(res => {
-        if (!res.ok) throw new Error(`TMDB responded with status ${res.status}`);
+        if (!res.ok) throw new Error("TMDB API Error");
         return res.json();
       })
       .then(tmdbData => {
-        const showName = tmdbData.name || tmdbData.title || '';
-        let seasonName = '';
-        if (tmdbType === 'tv' && tmdbData.seasons) {
-          const sObj = tmdbData.seasons.find(s => s.season_number === seasonNum);
-          if (sObj) seasonName = sObj.name || '';
-        }
-        log(`Resolved TMDB Show Name: "${showName}", Season Name: "${seasonName}"`);
+        const queryTitle = tmdbData.name || tmdbData.title;
+        if (!queryTitle) throw new Error("Judul tidak ditemukan di TMDB");
         
-        let query = showName;
-        if (seasonName && seasonName !== `Season ${seasonNum}`) {
-          query = `${showName} ${seasonName}`;
-        }
+        console.log("[Kuronime] Judul TMDB: " + queryTitle);
+        const searchUrl = BASE_URL + "/?s=" + encodeURIComponent(queryTitle);
         
-        return performSearch(query, seasonNum, episodeNum, tmdbType);
+        // 2. Cari judul di Kuronime
+        return fetch(searchUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          }
+        });
       })
-      .then(streams => {
+      .then(res => res.text())
+      .then(searchHtml => {
+        const $ = cheerio.load(searchHtml);
+        let animeUrl = null;
+        
+        // Berdasarkan audit: Struktur link search adalah div.item-article -> h2.entry-title -> a
+        $("div.item-article h2.entry-title a, article.item-article h2 a, h2.entry-title a").each((i, el) => {
+          const title = $(el).text() || $(el).attr("title") || "";
+          if (title.toLowerCase().includes(queryTitle.toLowerCase()) || queryTitle.toLowerCase().includes(title.toLowerCase())) {
+            animeUrl = $(el).attr("href");
+            return false;
+          }
+        });
+        
+        if (!animeUrl) {
+          // Fallback ke pencarian tautan pertama jika pencocokan nama ketat gagal
+          animeUrl = $("div.item-article h2.entry-title a").first().attr("href");
+        }
+        
+        if (!animeUrl) throw new Error("Anime tidak ditemukan di Kuronime");
+        if (!animeUrl.startsWith("http")) {
+          animeUrl = BASE_URL + animeUrl;
+        }
+        
+        console.log("[Kuronime] Halaman Anime Detail: " + animeUrl);
+        
+        // 3. Ambil halaman detail untuk mencari episode
+        return fetch(animeUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          }
+        });
+      })
+      .then(res => res.text())
+      .then(detailHtml => {
+        const $ = cheerio.load(detailHtml);
+        let episodeUrl = null;
+        
+        if (mediaType === "movie") {
+          // Jika movie, biasanya langsung mengarah ke halaman utama atau link list series pertama
+          episodeUrl = $("div.gmr-listseries a").first().attr("href");
+        } else {
+          // Berdasarkan audit ffft.txt: Kontainer episode adalah div.gmr-listseries -> a
+          // Dengan text: "Eps1", "Eps2", etc.
+          const targetEpText = "Eps" + episode;
+          console.log("[Kuronime] Mencari kontainer episode dengan text: " + targetEpText);
+          
+          $("div.gmr-listseries a").each((i, el) => {
+            const epText = $(el).text().trim();
+            // Cocokkan "Eps1" atau "Eps 1" atau "Eps01"
+            if (epText.replace(/\s+/g, '').toLowerCase() === targetEpText.toLowerCase() || epText.includes(targetEpText)) {
+              episodeUrl = $(el).attr("href");
+              return false;
+            }
+          });
+        }
+        
+        if (!episodeUrl) throw new Error("Episode " + episode + " tidak ditemukan di Kuronime");
+        if (!episodeUrl.startsWith("http")) {
+          episodeUrl = BASE_URL + episodeUrl;
+        }
+        
+        console.log("[Kuronime] Halaman Nonton Episode: " + episodeUrl);
+        
+        // 4. Ambil halaman episode untuk mengekstrak ID Enkripsi
+        return fetch(episodeUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          }
+        });
+      })
+      .then(res => res.text())
+      .then(epHtml => {
+        // Ekstrak _0xa100d42aa
+        const idMatch = epHtml.match(/var\s+_0xa100d42aa\s*=\s*"([^"]+)"/);
+        if (!idMatch) throw new Error("ID Enkripsi _0xa100d42aa tidak ditemukan");
+        
+        const encryptedId = idMatch[1];
+        console.log("[Kuronime] Mendapatkan encrypted ID: " + encryptedId);
+        
+        // 5. Panggil server API Kuronime untuk mendapatkan link video
+        return fetch("https://animeku.org/api/v9/sources", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Origin": "https://kuronime.sbs",
+            "Referer": episodeUrl
+          },
+          body: JSON.stringify({ id: encryptedId })
+        });
+      })
+      .then(res => res.json())
+      .then(apiData => {
+        if (!apiData || !apiData.mirror) throw new Error("API tidak mengembalikan data mirror");
+        
+        // 6. Dekripsi mirror payload
+        const wrapper = JSON.parse(atob(apiData.mirror.trim()));
+        const decryptedStr = decryptAES(wrapper.ct, wrapper.s, wrapper.iv);
+        if (!decryptedStr) throw new Error("Gagal melakukan dekripsi payload AES");
+        
+        const mirrorData = JSON.parse(decryptedStr);
+        const streams = [];
+        
+        // Ekstrak embed link
+        if (mirrorData.embed) {
+          Object.entries(mirrorData.embed).forEach(([quality, hosts]) => {
+            Object.entries(hosts).forEach(([hostName, hostUrl]) => {
+              if (hostUrl && hostUrl.startsWith("http")) {
+                streams.push({
+                  name: "Kuronime | " + hostName,
+                  title: "Mirror " + hostName + " (" + quality + ")",
+                  url: hostUrl,
+                  quality: quality,
+                  provider: "kuronime"
+                });
+              }
+            });
+          });
+        }
+        
+        // Ekstrak direct filelions jika ada
+        if (mirrorData.filelions && mirrorData.filelions.startsWith("http")) {
+          streams.push({
+            name: "Kuronime | FileLions",
+            title: "Mirror FileLions (HD)",
+            url: mirrorData.filelions,
+            quality: "720p",
+            provider: "kuronime"
+          });
+        }
+        
+        console.log("[Kuronime] Sukses mengekstrak " + streams.length + " streams.");
         resolve(streams);
       })
       .catch(err => {
-        log(`Pipeline failed: ${err.message}`);
-        resolve([]);
+        console.error("[Kuronime] Gagal memproses stream: " + err.message);
+        resolve([]); // Mengembalikan array kosong agar Nuvio tidak crash
       });
   });
-}
-
-function performSearch(query, seasonNum, episodeNum, tmdbType) {
-  return fetchPageWithFallback(`/?s=${encodeURIComponent(query)}`)
-    .then(html => {
-      const $ = cheerio.load(html);
-      const links = [];
-      $('article, .post-item, .item, .bsx').each((index, el) => {
-        const title = $(el).find('h2, .entry-title, .title, .tt').text().trim();
-        const href = $(el).find('a').attr('href') || '';
-        if (title && href) {
-          links.push({ title, href });
-        }
-      });
-      log(`Found ${links.length} potential matches in search results`);
-      
-      const match = findBestMatch(links, seasonNum, episodeNum, tmdbType);
-      if (!match) {
-        log(`No matching post found for Season ${seasonNum} Episode ${episodeNum}`);
-        return [];
-      }
-      
-      log(`Best match post: "${match.title}" -> ${match.href}`);
-      return navigateAndExtractStreams(match.href, seasonNum, episodeNum, tmdbType);
-    });
-}
-
-function navigateAndExtractStreams(postUrl, seasonNum, episodeNum, tmdbType) {
-  const path = postUrl.replace(/^https?:\/\/[^\/]+/, '');
-  
-  return fetchPageWithFallback(path)
-    .then(html => {
-      const $ = cheerio.load(html);
-      
-      // If it's a TV series main page, we must find and jump to the specific episode page
-      if (tmdbType === 'tv' && path.includes('/tv/')) {
-        log(`Detected TV main series page. Searching for episode ${episodeNum} link...`);
-        let epUrl = '';
-        
-        $('div.bixbox.bxcl li, .eplister li').each((index, el) => {
-          const epText = $(el).find('a').text().trim();
-          const href = $(el).find('a').attr('href') || '';
-          
-          const epMatch = epText.match(/episode\s*0*(\d+)/i) || epText.match(/eps\s*0*(\d+)/i) || epText.match(/\b0*(\d+)\b/);
-          if (epMatch && parseInt(epMatch[1], 10) === episodeNum) {
-            epUrl = href;
-          }
-        });
-        
-        // Fallback: search any links matching "nonton-" + episode number
-        if (!epUrl) {
-          $('a[href*="/nonton-"]').each((index, el) => {
-            const href = $(el).attr('href') || '';
-            const title = $(el).text().trim().toLowerCase();
-            if (title.includes(`episode ${episodeNum}`) || title.includes(`eps ${episodeNum}`) || href.includes(`-episode-${episodeNum}`)) {
-              epUrl = href;
-            }
-          });
-        }
-        
-        if (epUrl) {
-          log(`Navigating to episode page: ${epUrl}`);
-          const epPath = epUrl.replace(/^https?:\/\/[^\/]+/, '');
-          return fetchPageWithFallback(epPath).then(epHtml => extractFromEpisodePage(epHtml, epUrl));
-        } else {
-          log(`Could not resolve specific page for Episode ${episodeNum}. Scraping main page directly.`);
-          return extractFromEpisodePage(html, postUrl);
-        }
-      }
-      
-      return extractFromEpisodePage(html, postUrl);
-    });
-}
-
-function extractFromEpisodePage(html, refererUrl) {
-  const $ = cheerio.load(html);
-  const streams = [];
-  const urlSet = new Set();
-  
-  // Try to find the encrypted sources payload (_0xa100d42aa)
-  const encryptedIdMatch = html.match(/var\s+_0xa100d42aa\s*=\s*"([^"]+)"/);
-  
-  if (encryptedIdMatch && encryptedIdMatch[1]) {
-    const encryptedId = encryptedIdMatch[1];
-    log(`Found encrypted source ID: ${encryptedId}. Querying API...`);
-    
-    return fetch('https://animeku.org/api/v9/sources', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Origin': 'https://kuronime.sbs',
-        'Referer': refererUrl,
-        'Accept': 'application/json, text/plain, */*'
-      },
-      body: JSON.stringify({ id: encryptedId })
-    })
-    .then(res => {
-      if (!res.ok) throw new Error(`API sources status ${res.status}`);
-      return res.json();
-    })
-    .then(sourcesJson => {
-      const mirror = sourcesJson.mirror || '';
-      if (!mirror) return [];
-      
-      const decryptedStr = decryptPayload(mirror, MIRROR_PASSWORD);
-      if (!decryptedStr) return [];
-      
-      const decrypted = JSON.parse(decryptedStr);
-      const candidates = [];
-      
-      // Parse filelions
-      if (decrypted.filelions) {
-        candidates.push({ url: decrypted.filelions, label: 'Filelions (Decrypted)' });
-      }
-      // Parse blog
-      if (decrypted.blog) {
-        candidates.push({ url: decrypted.blog, label: 'Blogger (Decrypted)' });
-      }
-      // Parse raw
-      if (decrypted.raw) {
-        candidates.push({ url: decrypted.raw, label: 'Direct Raw (Decrypted)' });
-      }
-      // Parse embed map
-      if (decrypted.embed) {
-        Object.keys(decrypted.embed).forEach(quality => {
-          const hosts = decrypted.embed[quality];
-          Object.keys(hosts).forEach(hostName => {
-            const hostUrl = hosts[hostName];
-            if (hostUrl && !hostUrl.includes('ads') && isStreamHost(hostUrl)) {
-              candidates.push({ url: hostUrl, label: `${hostName} (${quality})` });
-            }
-          });
-        });
-      }
-      
-      return candidates;
-    })
-    .then(candidates => {
-      // Add standard on-page fallback matches if API returned too few links
-      if (candidates.length === 0) {
-        $('iframe, video source, embed').each((index, el) => {
-          let url = $(el).attr('src') || $(el).attr('value') || $(el).attr('data-src') || '';
-          if (url) {
-            if (url.startsWith('//')) url = 'https:' + url;
-            if (isStreamHost(url) && !urlSet.has(url)) {
-              urlSet.add(url);
-              candidates.push({ url, label: `Mirror ${index + 1}` });
-            }
-          }
-        });
-      }
-      
-      // Build final stream objects for Nuvio
-      candidates.forEach(c => {
-        if (!urlSet.has(c.url)) {
-          urlSet.add(c.url);
-          streams.push({
-            name: 'Kuronime',
-            title: `Kuronime | ${c.label}`,
-            url: c.url,
-            quality: c.label.includes('1080p') ? '1080p' : '720p',
-            headers: {
-              'Referer': refererUrl,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-          });
-        }
-      });
-      
-      log(`Total resolved streams: ${streams.length}`);
-      return streams;
-    })
-    .catch(err => {
-      log(`API decryption lookup failed: ${err.message}. Falling back to standard DOM scraping.`);
-      return parseDOMFallback($, refererUrl);
-    });
-  }
-  
-  return parseDOMFallback($, refererUrl);
-}
-
-function parseDOMFallback($, refererUrl) {
-  const streams = [];
-  const urlSet = new Set();
-  
-  $('iframe, video source, embed').each((index, el) => {
-    let url = $(el).attr('src') || $(el).attr('value') || $(el).attr('data-src') || '';
-    if (url) {
-      if (url.startsWith('//')) url = 'https:' + url;
-      if (isStreamHost(url) && !urlSet.has(url)) {
-        urlSet.add(url);
-        streams.push({
-          name: 'Kuronime',
-          title: `Kuronime | Mirror ${index + 1}`,
-          url: url,
-          quality: '720p',
-          headers: {
-            'Referer': refererUrl,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-        });
-      }
-    }
-  });
-  
-  log(`Fallback DOM resolved ${streams.length} streams.`);
-  return Promise.resolve(streams);
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { getStreams };
 } else {
   global.getStreams = getStreams;
-            }
+}
