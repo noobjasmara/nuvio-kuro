@@ -1,16 +1,46 @@
-// Kuronime Provider for Nuvio v1.4.1 (Promise-based & Advanced Muvipro Multi-Server Resolver)
+// Kuronime Provider for Nuvio (Production-Grade Promise-based)
 const cheerio = require('cheerio-without-node-native');
 
 const PRIMARY_IP = '154.203.162.226';
 const FALLBACK_IP = '154.203.167.220';
-const TMDB_API_KEY = '844132b4db1b13101217e57c1d1a8123';
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c'; // Stable active TMDB Key
 
 function log(msg) {
   console.log(`[Kuronime] ${msg}`);
 }
 
+function isStreamHost(url) {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  return u.includes('sibnet.ru') || 
+         u.includes('vidmoly.') || 
+         u.includes('uqload.') || 
+         u.includes('voe.') || 
+         u.includes('streamtape.') || 
+         u.includes('dood.') || 
+         u.includes('filemoon.') || 
+         u.includes('sendvid.') || 
+         u.includes('megaplay.') || 
+         u.includes('lecteurvideo.') || 
+         u.includes('zencloudz.') || 
+         u.includes('younetu.') ||
+         u.includes('blogger.com') ||
+         u.includes('blogspot.com') ||
+         u.includes('pixeldrain.com') ||
+         u.includes('ok.ru') ||
+         u.includes('gembed') ||
+         u.includes('player') ||
+         u.includes('154.203.162.226') ||
+         u.includes('154.203.167.220');
+}
+
+function getDomainName(url) {
+  const match = url.match(/https?:\/\/([^\/]+)/i);
+  return match ? match[1] : 'Direct';
+}
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     log(`Starting lookup for ID: ${tmdbId} (${mediaType}) Season: ${seasonNum} Episode: ${episodeNum}`);
     
     const tmdbType = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
@@ -24,6 +54,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       .then(tmdbData => {
         const showName = tmdbData.name || tmdbData.title || '';
         let seasonName = '';
+        
         if (tmdbType === 'tv' && tmdbData.seasons) {
           const sObj = tmdbData.seasons.find(s => s.season_number === seasonNum);
           if (sObj) seasonName = sObj.name || '';
@@ -31,10 +62,12 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         
         log(`Resolved TMDB Show Name: "${showName}", Season Name: "${seasonName}"`);
         
+        // Build robust search query
         let query = showName;
         if (seasonName && seasonName !== `Season ${seasonNum}`) {
           query = `${showName} ${seasonName}`;
         }
+        
         return performSearch(query, seasonNum, episodeNum, tmdbType);
       })
       .then(streams => {
@@ -42,7 +75,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       })
       .catch(err => {
         log(`Pipeline failed: ${err.message}`);
-        resolve([]);
+        resolve([]); // Graceful fallback
       });
   });
 }
@@ -53,8 +86,8 @@ function performSearch(query, seasonNum, episodeNum, tmdbType) {
       const $ = cheerio.load(html);
       const links = [];
       
-      $('article, .post-item, .item, .bsx, .listupd .main-meta').each((index, el) => {
-        const title = $(el).find('h2, .entry-title, .title, .tt, .entry-title a').text().trim() || $(el).find('a').attr('title') || '';
+      $('article, .post-item, .item, .bsx').each((index, el) => {
+        const title = $(el).find('h2, .entry-title, .title, .tt').text().trim();
         const href = $(el).find('a').attr('href') || '';
         if (title && href) {
           links.push({ title, href });
@@ -70,7 +103,7 @@ function performSearch(query, seasonNum, episodeNum, tmdbType) {
       }
       
       log(`Best match post: "${match.title}" -> ${match.href}`);
-      return extractStreamsFromPost(match.href, episodeNum, tmdbType);
+      return extractStreamsFromPost(match.href);
     });
 }
 
@@ -79,6 +112,7 @@ function findBestMatch(links, seasonNum, episodeNum, tmdbType) {
     return links[0] || null;
   }
   
+  // Smarter matching pattern for Indonesian WordPress episode names
   const epPatterns = [
     new RegExp(`(?:ep|episode|eps|\\b)\\s*0*${episodeNum}\\b`, 'i'),
     new RegExp(`\\b0*${episodeNum}\\b`, 'i')
@@ -92,24 +126,6 @@ function findBestMatch(links, seasonNum, episodeNum, tmdbType) {
     }
   }
   return links[0] || null;
-}
-
-function isStreamHost(url) {
-  if (!url || typeof url !== 'string') return false;
-  const u = url.toLowerCase();
-  const hosts = [
-    'sibnet.ru', 'vidmoly', 'uqload', 'voe', 'streamtape', 'dood', 
-    'filemoon', 'sendvid', 'megaplay', 'lecteurvideo', 'zencloudz', 
-    'younetu', 'mp4upload', 'yourupload', 'solidfiles', 'krakenfiles', 
-    'pixeldrain', 'fileditch', 'gembed', 'gdriveplayer', 'blogspot', 
-    'blogger.com', 'google.com/file', 'googleapis.com'
-  ];
-  return hosts.some(host => u.includes(host));
-}
-
-function getDomainName(url) {
-  const match = url.match(/https?:\/\/([^\/]+)/i);
-  return match ? match[1] : 'Direct';
 }
 
 function resolveStreamUrl(url) {
@@ -140,132 +156,85 @@ function resolveStreamUrl(url) {
   return Promise.resolve(url);
 }
 
-function extractStreamsFromPost(postUrl, episodeNum, tmdbType) {
+function extractStreamsFromPost(postUrl) {
   const path = postUrl.replace(/^https?:\/\/[^\/]+/, '');
   return fetchPageWithFallback(path)
     .then(html => {
       const $ = cheerio.load(html);
+      const streams = [];
+      const urlSet = new Set();
       
-      // 1. Check if this is a main TV show page and we need to navigate to the specific episode subpage
-      let episodeUrl = '';
-      
-      // Look for explicit links to episodes (common in Muvipro TV show layouts)
-      $('a').each((i, el) => {
-        const href = $(el).attr('href') || '';
-        const text = $(el).text().trim().toLowerCase();
-        const titleAttr = ($(el).attr('title') || '').toLowerCase();
+      const addStream = (url, label) => {
+        if (!url) return;
+        if (url.startsWith('//')) url = 'https:' + url;
+        if (url.startsWith('/')) url = `http://${PRIMARY_IP}` + url; // Convert relative URLs
         
-        if (href && (href.includes('/eps/') || href.includes('/episode/'))) {
-          const epTextPattern = new RegExp(`^(?:eps|episode)?\\s*0*${episodeNum}$`, 'i');
-          if (epTextPattern.test(text) || text === `eps${episodeNum}` || text === `eps0${episodeNum}` || titleAttr.includes(`episode ${episodeNum}`)) {
-            episodeUrl = href;
-            return false; // break loop
+        if (isStreamHost(url) && !urlSet.has(url)) {
+          urlSet.add(url);
+          streams.push({ url, label });
+        }
+      };
+
+      // 1. Gather all hrefs from any <a> tags
+      $('a').each((i, el) => {
+        addStream($(el).attr('href'), $(el).text().trim() || 'Link');
+      });
+
+      // 2. Gather all src from any iframe, video, source, embed tags
+      $('iframe, video, source, embed').each((i, el) => {
+        let src = $(el).attr('src') || $(el).attr('value') || $(el).attr('data-src') || '';
+        addStream(src, `Mirror ${i + 1}`);
+      });
+
+      // 3. Scan elements with common data attributes (Muvipro AJAX tab players)
+      $('[data-embed], [data-src], [data-video], [data-link], .player-option, .muvi-player-select li').each((i, el) => {
+        const embedHtml = $(el).attr('data-embed') || $(el).attr('data-src') || $(el).attr('data-video') || $(el).attr('data-link') || '';
+        if (embedHtml) {
+          if (embedHtml.includes('<iframe')) {
+            const match = embedHtml.match(/src=["']([^"']+)["']/i);
+            if (match) addStream(match[1], `Server ${i + 1}`);
+          } else {
+            addStream(embedHtml, `Server ${i + 1}`);
           }
         }
       });
+
+      // 4. Scan the entire raw HTML for any match of streaming URLs as a last resort
+      const regex = /https?:\/\/[^\s"'<>\(\)]+/gi;
+      let match;
+      while ((match = regex.exec(html)) !== null) {
+        let u = match[0];
+        u = u.replace(/[.,;:\)\}\\]+$/, '');
+        addStream(u, 'Direct Stream');
+      }
+
+      log(`Found ${streams.length} raw streams after scanning all layers.`);
       
-      // Fallback matching for episode links if not resolved above
-      if (!episodeUrl && tmdbType !== 'movie') {
-        $('a').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const text = $(el).text().trim().toLowerCase();
-          if (href && (href.includes('/eps/') || href.includes('/episode/'))) {
-            const matchesEp = new RegExp(`\\b0*${episodeNum}\\b`);
-            if (matchesEp.test(text)) {
-              episodeUrl = href;
-              return false;
+      const resolvedStreams = [];
+      const resolvePromises = streams.map(s => {
+        return resolveStreamUrl(s.url)
+          .then(resolvedUrl => {
+            if (resolvedUrl) {
+              resolvedStreams.push({
+                name: `Kuronime | ${s.label}`,
+                title: `Kuronime - Source: ${getDomainName(s.url)}`,
+                url: resolvedUrl,
+                quality: '720p',
+                headers: {
+                  'Referer': `http://${PRIMARY_IP}/`,
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+              });
             }
-          }
-        });
-      }
+          })
+          .catch(() => {});
+      });
       
-      if (episodeUrl && episodeUrl !== postUrl) {
-        log(`Navigating from series page to target episode subpage: ${episodeUrl}`);
-        const subPath = episodeUrl.replace(/^https?:\/\/[^\/]+/, '');
-        return fetchPageWithFallback(subPath).then(epHtml => parseEpisodePage(epHtml));
-      }
-      
-      return parseEpisodePage(html);
+      return Promise.all(resolvePromises).then(() => {
+        log(`Successfully resolved ${resolvedStreams.length} active streams`);
+        return resolvedStreams;
+      });
     });
-}
-
-function parseEpisodePage(html) {
-  const $ = cheerio.load(html);
-  const streams = [];
-  const urlSet = new Set();
-  
-  // A. Scrape multi-server streaming tab iFrames
-  $('iframe, video, source, embed').each((i, el) => {
-    let src = $(el).attr('src') || $(el).attr('value') || $(el).attr('data-src') || '';
-    if (src) {
-      if (src.startsWith('//')) src = 'https:' + src;
-      if (isStreamHost(src) && !urlSet.has(src)) {
-        urlSet.add(src);
-        streams.push({ url: src, label: `Mirror ${i + 1}` });
-      }
-    }
-  });
-  
-  // B. Parse download links as streaming sources (extremely rich and reliable source on Indonesian fansubs)
-  $('a').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const text = $(el).text().trim() || 'Download Link';
-    if (href && isStreamHost(href) && !urlSet.has(href)) {
-      urlSet.add(href);
-      streams.push({ url: href, label: text });
-    }
-  });
-  
-  // C. Parse data attributes of play buttons (for AJAX players)
-  $('[data-embed], [data-src], [data-code], [data-url], [data-video]').each((i, el) => {
-    let src = $(el).attr('data-embed') || $(el).attr('data-src') || $(el).attr('data-code') || $(el).attr('data-url') || $(el).attr('data-video') || '';
-    if (src) {
-      if (src.startsWith('//')) src = 'https:' + src;
-      if (isStreamHost(src) && !urlSet.has(src)) {
-        urlSet.add(src);
-        streams.push({ url: src, label: $(el).text().trim() || `Player ${i + 1}` });
-      }
-    }
-  });
-
-  // D. Scan raw page HTML for any unparsed stream URLs
-  const regex = /https?:\/\/[^\s"'<>\(\)]+/gi;
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    let u = match[0];
-    u = u.replace(/[.,;:\)\\}\\]+$/, '');
-    if (isStreamHost(u) && !urlSet.has(u)) {
-      urlSet.add(u);
-      streams.push({ url: u, label: 'Direct Stream' });
-    }
-  }
-  
-  log(`Found ${streams.length} total raw streaming options after scanning all layers.`);
-  
-  const resolvedStreams = [];
-  const resolvePromises = streams.map(s => {
-    return resolveStreamUrl(s.url)
-      .then(resolvedUrl => {
-        if (resolvedUrl) {
-          resolvedStreams.push({
-            name: `Kuronime | ${s.label}`,
-            title: `Kuronime Stream\nSource: ${getDomainName(s.url)}`,
-            url: resolvedUrl,
-            quality: '720p',
-            headers: {
-              'Referer': `http://${PRIMARY_IP}/`,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-          });
-        }
-      })
-      .catch(() => {});
-  });
-  
-  return Promise.all(resolvePromises).then(() => {
-    log(`Successfully resolved ${resolvedStreams.length} active play links.`);
-    return resolvedStreams;
-  });
 }
 
 function fetchPageWithFallback(path) {
@@ -288,8 +257,9 @@ function fetchPageWithFallback(path) {
     });
 }
 
+// Export for React Native compatibility
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { getStreams };
 } else {
   global.getStreams = getStreams;
-    }
+}
