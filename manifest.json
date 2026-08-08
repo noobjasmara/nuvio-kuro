@@ -1,18 +1,20 @@
 {
   "name": "Nuvio Kuronime",
   "description": "Kumpulan plugin Nuvio noobjasmara",
-  "version": "1.3.0",
+  "version": "1.0.0",
   "scrapers": [
     {
       "id": "kuronime-provider",
       "name": "Kuronime Anime",
-      "description": "Nonton Kuronime Sub Indo lancar jaya (TVDB & Absolute Mapper)",
-      "version": "1.3.0",
+      "description": "Nonton Kuronime Sub Indo (TVDB & Absolute Mapper)",
+      "version": "1.0.0",
       "author": "noobjasmara",
       "supportedTypes": [ "tv", "movie" ],
       "filename": "providers/kuronime.js",
       "contentLanguage": [ "id" ],
-      "enabled": true
+      "enabled": true,
+      "formats": [ "mp4", "mkv" ],
+      "supportsExternalPlayer": true
     }
   ]
 }
