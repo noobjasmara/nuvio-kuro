@@ -1,16 +1,20 @@
-[
-  {
-    "id": "nuvio-kuro",
-    "name": "Kuronime",
-    "description": "Nonton Anime Sub Indo dari Kuronime",
-    "version": "1.4.0",
-    "author": "noobjasmara",
-    "supportedTypes": ["movie", "tv"],
-    "filename": "providers/kuronime.js",
-    "enabled": true,
-    "logo": "https://154.203.162.226/favicon.ico",
-    "contentLanguage": ["id"],
-    "formats": ["mp4", "mkv", "m3u8"],
-    "supportsExternalPlayer": true
-  }
-]
+{
+  "name": "plugin test",
+  "author": "noob",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "kuronime",
+      "name": "Kuronime",
+      "description": "Kuronime indonesia",
+      "version": "1.0.0",
+      "author": "author",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "/providers/kuronime.js",
+      "enabled": true,
+      "formats": ["mp4", "mkv", "m3u8"],
+      "logo": "https://i.postimg.cc/DwpqLJWV/allanime.png",
+      "contentLanguage": ["en"]
+    }
+  ]
+}
