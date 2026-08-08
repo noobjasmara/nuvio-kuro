@@ -6,7 +6,7 @@
     {
       "id": "kuronime-provider",
       "name": "Kuronime Anime",
-      "description": "Nonton Kuronime Sub Indo lancar jaya (TVDB & Absolute Mapper)",
+      "description": "Nonton Kuronime Sub Indo lancar jaya (Kitsu & TVDB Auto-Mapper)",
       "version": "1.2.0",
       "author": "noobjasmara",
       "supportedTypes": [ "tv", "movie" ],
