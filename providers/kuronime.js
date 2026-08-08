@@ -1,306 +1,341 @@
-const cheerio = require('cheerio-without-node-native');
+// Provider Kuronime untuk Nuvio (Versi ES5 Murni Tanpa Async/Await agar Kompatibel dengan Hermes)
 
-const TMDB_API_KEY = "844132b4db1b13101217e57c1d1a8123";
-const BASE_IP_1 = "http://154.203.162.226";
-const BASE_IP_2 = "http://154.203.167.220";
+var primaryHost = "http://154.203.162.226";
+var backupHost = "http://154.203.167.220";
 
-function fetchTMDB(tmdbId, mediaType) {
-    const url = "https://api.themoviedb.org/3/" + mediaType + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
-    return fetch(url)
-        .then(res => {
-            if (!res.ok) throw new Error("TMDB HTTP error " + res.status);
-            return res.json();
-        });
+function cleanTitle(str) {
+  if (!str) return "";
+  return str.toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function getSeasonName(seasons, seasonNum) {
-    if (!seasons || !Array.isArray(seasons)) return "";
-    for (let i = 0; i < seasons.length; i++) {
-        if (seasons[i].season_number === seasonNum) {
-            return seasons[i].name || "";
-        }
-    }
-    return "";
+function resolveUrl(base, relative) {
+  if (!relative) return "";
+  if (relative.indexOf('http://') === 0 || relative.indexOf('https://') === 0 || relative.indexOf('//') === 0) {
+    if (relative.indexOf('//') === 0) return "http:" + relative;
+    return relative;
+  }
+  if (relative.indexOf('/') === 0) {
+    var parts = base.split('/');
+    return parts[0] + "//" + parts[2] + relative;
+  }
+  var dir = base.substring(0, base.lastIndexOf('/'));
+  return dir + "/" + relative;
 }
 
-function fetchKuronime(path) {
-    const url1 = BASE_IP_1 + path;
-    const url2 = BASE_IP_2 + path;
-    
-    return fetch(url1)
-        .then(res => {
-            if (!res.ok) throw new Error("Primary IP error " + res.status);
-            return res.text();
+function resolveShowName(tmdbId, mediaType) {
+  return new Promise(function(resolve) {
+    if (typeof tmdbId === 'string' && tmdbId.indexOf('kitsu:') === 0) {
+      var kitsuId = tmdbId.split(':')[1];
+      var kitsuUrl = "https://kitsu.io/api/edge/anime/" + kitsuId;
+      fetch(kitsuUrl)
+        .then(function(res) { return res.json(); })
+        .then(function(json) {
+          if (json && json.data && json.data.attributes) {
+            var title = json.data.attributes.canonicalTitle || json.data.attributes.titles.en || json.data.attributes.titles.en_jp || "";
+            resolve({ title: title, isAnime: true });
+          } else {
+            resolve({ title: "Anime", isAnime: true });
+          }
         })
-        .catch(err => {
-            console.log("[Kuronime] Primary IP failed, trying fallback IP... (" + err.message + ")");
-            return fetch(url2)
-                .then(res => {
-                    if (!res.ok) throw new Error("Fallback IP error " + res.status);
-                    return res.text();
-                });
+        .catch(function() {
+          resolve({ title: "Anime", isAnime: true });
         });
+    } else {
+      var apiKey = "844132b4db1b13101217e57c1d1a8123";
+      var tmdbUrl = mediaType === "movie" 
+        ? "https://api.themoviedb.org/3/movie/" + tmdbId + "?api_key=" + apiKey
+        : "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + apiKey;
+      fetch(tmdbUrl)
+        .then(function(res) { return res.json(); })
+        .then(function(json) {
+          if (json) {
+            var title = mediaType === "movie" ? (json.title || json.original_title) : (json.name || json.original_name);
+            resolve({ title: title, isAnime: false });
+          } else {
+            resolve({ title: "", isAnime: false });
+          }
+        })
+        .catch(function() {
+          resolve({ title: "", isAnime: false });
+        });
+    }
+  });
 }
 
-function searchKuronime(query, episodeNum) {
-    const searchPath = "/?s=" + encodeURIComponent(query);
-    console.log("[Kuronime] Querying: \"" + query + "\" -> " + searchPath);
-    
-    return fetchKuronime(searchPath)
-        .then(html => {
-            const $ = cheerio.load(html);
-            let matchedLink = "";
-            
-            $('h4 a, h2 a, .post-title a').each((i, el) => {
-                const title = $(el).text() || '';
-                const href = $(el).attr('href') || '';
-                
-                console.log("[Kuronime] Search Result Candidate: \"" + title + "\" -> " + href);
-                
-                const titleLower = title.toLowerCase();
-                const queryLower = query.toLowerCase();
-                
-                let containsKeywords = true;
-                const keywords = queryLower.split(" ");
-                for (let k = 0; k < keywords.length; k++) {
-                    if (keywords[k].length > 2 && !titleLower.includes(keywords[k])) {
-                        containsKeywords = false;
-                        break;
-                    }
-                }
-                
-                if (containsKeywords) {
-                    const epPattern = new RegExp(`(?:episode|eps|eps\\s+|episode\\s+|-ep-|-episode-|-eps-|/ep-|/episode-|/eps-|^|\\b)0*${episodeNum}(?:\\b|[^\\d]|$)`, 'i');
-                    if (epPattern.test(titleLower)) {
-                        matchedLink = href;
-                        console.log("[Kuronime] Matched Direct Episode Post: " + title);
-                        return false; 
-                    }
-                    
-                    if (!matchedLink) {
-                        matchedLink = href;
-                    }
-                }
-            });
-            
-            if (matchedLink && (matchedLink.includes('/tv/') || matchedLink.includes('/anime/') || matchedLink.includes('/series/'))) {
-                console.log("[Kuronime] Matched link is a Series page. Fetching series page to find Episode " + episodeNum);
-                return fetchKuronime(matchedLink.replace(BASE_IP_1, "").replace(BASE_IP_2, ""))
-                    .then(seriesHtml => {
-                        const $series = cheerio.load(seriesHtml);
-                        let episodeLink = "";
-                        
-                        $series('a').each((i, el) => {
-                            const href = $series(el).attr('href') || '';
-                            const text = $series(el).text() || '';
-                            
-                            const epPattern = new RegExp(`(?:episode|eps|eps\\s+|episode\\s+|-ep-|-episode-|-eps-|/ep-|/episode-|/eps-|^|\\b)0*${episodeNum}(?:\\b|[^\\d]|$)`, 'i');
-                            if (epPattern.test(href) || epPattern.test(text)) {
-                                episodeLink = href;
-                                return false; 
-                            }
-                        });
-                        
-                        return episodeLink || matchedLink; 
-                    });
-            }
-            
-            return matchedLink;
-        });
+function fetchKuronime(primaryHost, backupHost, path) {
+  return new Promise(function(resolve, reject) {
+    fetch(primaryHost + path)
+      .then(function(res) {
+        if (!res.ok) throw new Error("Status " + res.status);
+        return res.text();
+      })
+      .then(resolve)
+      .catch(function() {
+        fetch(backupHost + path)
+          .then(function(res) {
+            if (!res.ok) throw new Error("Status " + res.status);
+            return res.text();
+          })
+          .then(resolve)
+          .catch(reject);
+      });
+  });
 }
 
-function resolveStream(url) {
-    return new Promise((resolve) => {
-        if (url.includes("sibnet.ru")) {
-            console.log("[Kuronime] Resolving Sibnet Stream: " + url);
-            fetch(url, { headers: { "Referer": BASE_IP_1 + "/" } })
-                .then(res => res.text())
-                .then(html => {
-                    const fileMatch = html.match(/file\s*:\s*['"]([^'"]+\.mp4[^'"]*)['"]/);
-                    if (fileMatch) {
-                        let directUrl = fileMatch[1];
-                        if (directUrl.startsWith('/')) {
-                            directUrl = "https://video.sibnet.ru" + directUrl;
-                        }
-                        console.log("[Kuronime] Sibnet Resolved Success: " + directUrl);
-                        resolve({
-                            name: "Kuronime - Sibnet",
-                            title: "Sibnet Stream",
-                            url: directUrl,
-                            quality: "720p",
-                            headers: {
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                "Referer": url
-                            },
-                            provider: "kuronime"
-                        });
-                    } else {
-                        resolve(null);
-                    }
-                })
-                .catch(() => resolve(null));
-        } else if (url.includes("uqload")) {
-            console.log("[Kuronime] Resolving Uqload Stream: " + url);
-            fetch(url, { headers: { "Referer": BASE_IP_1 + "/" } })
-                .then(res => res.text())
-                .then(html => {
-                    const sourceMatch = html.match(/sources\s*:\s*\[\s*["']([^"']+)["']/);
-                    if (sourceMatch) {
-                        const directUrl = sourceMatch[1];
-                        console.log("[Kuronime] Uqload Resolved Success: " + directUrl);
-                        resolve({
-                            name: "Kuronime - Uqload",
-                            title: "Uqload Stream",
-                            url: directUrl,
-                            quality: "1080p",
-                            headers: {
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                "Referer": "https://uqload.to/"
-                            },
-                            provider: "kuronime"
-                        });
-                    } else {
-                        resolve(null);
-                    }
-                })
-                .catch(() => resolve(null));
-        } else {
-            resolve(null);
+function extractStreamsFromHtml(html, primaryHost) {
+  var cheerio = require('cheerio-without-node-native');
+  var $ = cheerio.load(html);
+  var streams = [];
+  
+  // 1. Ekstrak Iframe Embed
+  $('iframe').each(function(i, el) {
+    var src = $(el).attr('src');
+    if (src) {
+      var resolvedSrc = resolveUrl(primaryHost, src);
+      var lowerSrc = resolvedSrc.toLowerCase();
+      
+      var hostName = "Embed Player";
+      if (lowerSrc.indexOf('sibnet') !== -1) hostName = "Sibnet";
+      else if (lowerSrc.indexOf('vidmoly') !== -1) hostName = "Vidmoly";
+      else if (lowerSrc.indexOf('uqload') !== -1) hostName = "Uqload";
+      else if (lowerSrc.indexOf('sendvid') !== -1) hostName = "Sendvid";
+      else if (lowerSrc.indexOf('voe') !== -1) hostName = "Voe";
+      else if (lowerSrc.indexOf('streamtape') !== -1) hostName = "Streamtape";
+      else if (lowerSrc.indexOf('dood') !== -1) hostName = "Doodstream";
+      else if (lowerSrc.indexOf('ok.ru') !== -1) hostName = "Ok.ru";
+      else if (lowerSrc.indexOf('blogger') !== -1) hostName = "Blogger";
+      
+      streams.push({
+        name: "Kuronime " + hostName,
+        title: "Stream " + hostName,
+        url: resolvedSrc,
+        quality: "720p",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Referer": primaryHost + "/"
         }
-    });
-}
-
-function extractPlayers(episodeUrl) {
-    const relativePath = episodeUrl.replace(BASE_IP_1, "").replace(BASE_IP_2, "");
-    return fetchKuronime(relativePath)
-        .then(html => {
-            const $ = cheerio.load(html);
-            const embedUrls = [];
-            
-            $('iframe').each((i, el) => {
-                const src = $(el).attr('src') || '';
-                if (src) {
-                    if (src.startsWith('//')) {
-                        embedUrls.push("https:" + src);
-                    } else if (src.startsWith('/')) {
-                        embedUrls.push(BASE_IP_1 + src);
-                    } else {
-                        embedUrls.push(src);
-                    }
-                }
-            });
-            
-            $('[data-embed], [data-video], [data-src], [data-url], [data-link]').each((i, el) => {
-                const src = $(el).attr('data-embed') || $(el).attr('data-video') || $(el).attr('data-src') || $(el).attr('data-url') || $(el).attr('data-link') || '';
-                if (src) {
-                    if (src.startsWith('//')) {
-                        embedUrls.push("https:" + src);
-                    } else if (src.startsWith('/')) {
-                        embedUrls.push(BASE_IP_1 + src);
-                    } else if (src.startsWith('http')) {
-                        embedUrls.push(src);
-                    }
-                }
-            });
-            
-            console.log("[Kuronime] Found Raw Player Embeds: " + JSON.stringify(embedUrls));
-            
-            const streams = [];
-            const promises = [];
-            
-            for (let i = 0; i < embedUrls.length; i++) {
-                const url = embedUrls[i];
-                promises.push(
-                    resolveStream(url)
-                        .then(resolvedStream => {
-                            if (resolvedStream) {
-                                streams.push(resolvedStream);
-                            }
-                        })
-                        .catch(err => {
-                            console.log("[Kuronime] Error resolving stream for: " + url + " - " + err.message);
-                        })
-                );
-            }
-            
-            return Promise.all(promises).then(() => {
-                if (streams.length > 0) {
-                    return streams;
-                }
-                
-                const fallbackStreams = [];
-                for (let i = 0; i < embedUrls.length; i++) {
-                    const url = embedUrls[i];
-                    if (url.includes("sibnet") || url.includes("uqload") || url.includes("voe") || url.includes("mp4upload")) {
-                        fallbackStreams.push({
-                            name: "Kuronime - Embed " + (i + 1),
-                            title: "Server " + (i + 1) + " (Embed)",
-                            url: url,
-                            quality: "720p",
-                            headers: {
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                "Referer": BASE_IP_1 + "/"
-                            },
-                            provider: "kuronime"
-                        });
-                    }
-                }
-                return fallbackStreams;
-            });
-        });
-}
-
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    return new Promise((resolve) => {
-        console.log("[Kuronime] Starting lookup for ID: " + tmdbId + " (" + mediaType + ") Season: " + seasonNum + " Episode: " + episodeNum);
+      });
+    }
+  });
+  
+  // 2. Ekstrak Link Download/Direct File
+  $('a').each(function(i, el) {
+    var href = $(el).attr('href');
+    var text = $(el).text().trim();
+    if (href) {
+      var lowerHref = href.toLowerCase();
+      var lowerText = text.toLowerCase();
+      
+      var isDirectFile = lowerHref.indexOf('.mp4') !== -1 || lowerHref.indexOf('.mkv') !== -1;
+      var isFileHost = lowerHref.indexOf('drive.google.com') !== -1 || 
+                       lowerHref.indexOf('mega.nz') !== -1 || 
+                       lowerHref.indexOf('mediafire.com') !== -1 ||
+                       lowerHref.indexOf('zippyshare') !== -1 ||
+                       lowerHref.indexOf('gdrive') !== -1 ||
+                       lowerHref.indexOf('blogger.com/video-play') !== -1;
+                       
+      if (isDirectFile || isFileHost) {
+        var quality = "720p";
+        if (lowerText.indexOf('1080') !== -1 || lowerHref.indexOf('1080') !== -1) quality = "1080p";
+        else if (lowerText.indexOf('720') !== -1 || lowerHref.indexOf('720') !== -1) quality = "720p";
+        else if (lowerText.indexOf('480') !== -1 || lowerHref.indexOf('480') !== -1) quality = "480p";
+        else if (lowerText.indexOf('360') !== -1 || lowerHref.indexOf('360') !== -1) quality = "360p";
         
-        fetchTMDB(tmdbId, mediaType)
-            .then(mediaData => {
-                const showName = mediaData.name;
-                const seasonName = getSeasonName(mediaData.seasons, seasonNum);
-                
-                console.log("[Kuronime] Resolved TMDB Show Name: " + showName + ", Season Name: " + seasonName);
-                
-                let query = showName;
-                if (seasonName && !showName.toLowerCase().includes(seasonName.toLowerCase())) {
-                    query += " " + seasonName;
+        var title = text || ("Server Direct " + quality);
+        
+        streams.push({
+          name: "Kuronime " + (isDirectFile ? "Direct" : "Cloud"),
+          title: title,
+          url: href,
+          quality: quality,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": primaryHost + "/"
+          }
+        });
+      }
+    }
+  });
+  
+  return streams;
+}
+
+function fetchEpisodeOrSeriesPage(url, mediaType, episode, primaryHost, backupHost) {
+  return new Promise(function(resolve, reject) {
+    fetch(url)
+      .then(function(res) {
+        if (!res.ok) throw new Error("Status " + res.status);
+        return res.text();
+      })
+      .then(function(html) {
+        var cheerio = require('cheerio-without-node-native');
+        var $ = cheerio.load(html);
+        
+        if (mediaType === "tv" && (url.indexOf('/tv/') !== -1 || url.indexOf('/anime/') !== -1)) {
+          var episodeLinks = [];
+          $('a').each(function(i, el) {
+            var href = $(el).attr('href');
+            var text = $(el).text().trim();
+            if (href) {
+              episodeLinks.push({ href: href, text: text });
+            }
+          });
+          
+          var targetEpisodeUrl = null;
+          for (var i = 0; i < episodeLinks.length; i++) {
+            var link = episodeLinks[i];
+            var cleanedText = cleanTitle(link.text);
+            var cleanedHref = link.href.toLowerCase();
+            
+            var isTargetEpisode = cleanedText.indexOf("episode " + episode) !== -1 || 
+                                  cleanedText.indexOf("ep " + episode) !== -1 ||
+                                  cleanedText.indexOf("eps " + episode) !== -1 ||
+                                  cleanedHref.indexOf("episode-" + episode) !== -1 ||
+                                  cleanedHref.indexOf("ep-" + episode) !== -1 ||
+                                  cleanedText.match(new RegExp("\\b" + episode + "$"));
+                                  
+            if (isTargetEpisode) {
+              targetEpisodeUrl = link.href;
+              break;
+            }
+          }
+          
+          if (targetEpisodeUrl) {
+            fetch(targetEpisodeUrl)
+              .then(function(res2) { return res2.text(); })
+              .then(function(html2) {
+                var streams = extractStreamsFromHtml(html2, primaryHost);
+                resolve(streams);
+              })
+              .catch(reject);
+          } else {
+            var streams = extractStreamsFromHtml(html, primaryHost);
+            resolve(streams);
+          }
+        } else {
+          var streams = extractStreamsFromHtml(html, primaryHost);
+          resolve(streams);
+        }
+      })
+      .catch(reject);
+  });
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  return new Promise(function(resolve) {
+    resolveShowName(tmdbId, mediaType)
+      .then(function(showInfo) {
+        var showTitle = showInfo.title;
+        if (!showTitle) {
+          resolve([]);
+          return;
+        }
+        
+        var queries = [];
+        if (mediaType === "tv") {
+          queries.push(showTitle + " Episode " + episode);
+          queries.push(showTitle + " Ep " + episode);
+          queries.push(showTitle);
+        } else {
+          queries.push(showTitle);
+        }
+        
+        function trySearch(index) {
+          if (index >= queries.length) {
+            resolve([]);
+            return;
+          }
+          
+          var query = queries[index];
+          var path = "/?s=" + encodeURIComponent(query);
+          
+          fetchKuronime(primaryHost, backupHost, path)
+            .then(function(html) {
+              var cheerio = require('cheerio-without-node-native');
+              var $ = cheerio.load(html);
+              
+              var links = [];
+              $('a').each(function(i, el) {
+                var href = $(el).attr('href');
+                var text = $(el).text().trim();
+                if (href && text && href.indexOf('http') === 0) {
+                  links.push({ href: href, text: text });
                 }
+              });
+              
+              var matchedPostUrl = null;
+              var cleanedQuery = cleanTitle(showTitle);
+              
+              for (var i = 0; i < links.length; i++) {
+                var link = links[i];
+                var cleanedText = cleanTitle(link.text);
+                var cleanedHref = link.href.toLowerCase();
                 
-                const cleanQuery = query.replace(/[^\w\s-]/g, '').trim();
-                
-                return searchKuronime(cleanQuery, episodeNum)
-                    .then(episodeUrl => {
-                        if (!episodeUrl) {
-                            console.log("[Kuronime] Specific search failed, falling back to show name search: " + showName);
-                            return searchKuronime(showName.replace(/[^\w\s-]/g, '').trim(), episodeNum);
-                        }
-                        return episodeUrl;
-                    });
-            })
-            .then(episodeUrl => {
-                if (!episodeUrl) {
-                    console.log("[Kuronime] No episode page found.");
-                    resolve([]);
-                    return;
+                if (mediaType === "tv") {
+                  var hasEpisode = cleanedText.indexOf("episode " + episode) !== -1 || 
+                                    cleanedText.indexOf("ep " + episode) !== -1 ||
+                                    cleanedText.indexOf("eps " + episode) !== -1 ||
+                                    cleanedHref.indexOf("episode-" + episode) !== -1 ||
+                                    cleanedHref.indexOf("ep-" + episode) !== -1;
+                                    
+                  var matchesShow = cleanedText.indexOf(cleanedQuery) !== -1 || cleanedHref.indexOf(cleanedQuery.replace(/\s+/g, '-')) !== -1;
+                  
+                  if (hasEpisode && matchesShow) {
+                    matchedPostUrl = link.href;
+                    break;
+                  }
+                } else {
+                  if (cleanedText.indexOf(cleanedQuery) !== -1 || cleanedHref.indexOf(cleanedQuery.replace(/\s+/g, '-')) !== -1) {
+                    matchedPostUrl = link.href;
+                    break;
+                  }
                 }
-                
-                console.log("[Kuronime] Found Episode Page: " + episodeUrl);
-                
-                return extractPlayers(episodeUrl)
-                    .then(streams => {
-                        console.log("[Kuronime] Found streams count: " + streams.length);
-                        resolve(streams);
-                    });
+              }
+              
+              if (!matchedPostUrl && mediaType === "tv") {
+                for (var i = 0; i < links.length; i++) {
+                  var link = links[i];
+                  var cleanedText = cleanTitle(link.text);
+                  var cleanedHref = link.href.toLowerCase();
+                  var matchesShow = cleanedText.indexOf(cleanedQuery) !== -1 || cleanedHref.indexOf(cleanedQuery.replace(/\s+/g, '-')) !== -1;
+                  
+                  var isSeriesPage = cleanedHref.indexOf('/tv/') !== -1 || cleanedHref.indexOf('/anime/') !== -1;
+                  
+                  if (matchesShow && isSeriesPage) {
+                    matchedPostUrl = link.href;
+                    break;
+                  }
+                }
+              }
+              
+              if (matchedPostUrl) {
+                fetchEpisodeOrSeriesPage(matchedPostUrl, mediaType, episode, primaryHost, backupHost)
+                  .then(resolve)
+                  .catch(function() {
+                    trySearch(index + 1);
+                  });
+              } else {
+                trySearch(index + 1);
+              }
             })
-            .catch(err => {
-                console.log("[Kuronime] Pipeline failed: " + err.message);
-                resolve([]); 
+            .catch(function() {
+              trySearch(index + 1);
             });
-    });
+        }
+        
+        trySearch(0);
+      })
+      .catch(function() {
+        resolve([]);
+      });
+  });
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getStreams };
+  module.exports = { getStreams };
 } else {
-    global.getStreams = getStreams;
+  global.getStreams = getStreams;
 }
