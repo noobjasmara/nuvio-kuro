@@ -10,7 +10,7 @@
       "version": "1.4.1",
       "author": "noobjasmara",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/kuronime-v2.js",
+      "filename": "providers/kuronime.js",
       "enabled": true,
       "logo": "http://154.203.162.226/favicon.ico",
       "contentLanguage": ["id"],
