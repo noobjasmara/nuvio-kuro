@@ -12,14 +12,10 @@ function log(msg) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return new Promise((resolve, reject) => {
     log(`Starting lookup for ID: ${tmdbId} (${mediaType}) Season: ${seasonNum} Episode: ${episodeNum}`);
-
-    if (mediaType !== 'tv') {
-      log('Only TV/Anime content is supported by Kuronime.');
-      return resolve([]);
-    }
-
-    // 1. Fetch metadata from TMDB
-    const tmdbUrl = `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`;
+    
+    // Kuronime is focused on TV/Anime series, but we can resolve movie if it's there
+    const tmdbType = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
+    const tmdbUrl = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
     
     fetch(tmdbUrl)
       .then(res => {
@@ -27,22 +23,21 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return res.json();
       })
       .then(tmdbData => {
-        const showName = tmdbData.name || '';
+        const showName = tmdbData.name || tmdbData.title || '';
         let seasonName = '';
-        if (tmdbData.seasons) {
+        if (tmdbType === 'tv' && tmdbData.seasons) {
           const sObj = tmdbData.seasons.find(s => s.season_number === seasonNum);
           if (sObj) seasonName = sObj.name || '';
         }
-
         log(`Resolved TMDB Show Name: "${showName}", Season Name: "${seasonName}"`);
         
-        // Determine search query
+        // Build robust search query
         let query = showName;
         if (seasonName && seasonName !== `Season ${seasonNum}`) {
           query = `${showName} ${seasonName}`;
         }
-
-        return performSearch(query, seasonNum, episodeNum);
+        
+        return performSearch(query, seasonNum, episodeNum, tmdbType);
       })
       .then(streams => {
         resolve(streams);
@@ -54,87 +49,182 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   });
 }
 
-function performSearch(query, seasonNum, episodeNum) {
-  // Try primary IP first, then fallback
+function performSearch(query, seasonNum, episodeNum, tmdbType) {
   return fetchPageWithFallback(`/?s=${encodeURIComponent(query)}`)
     .then(html => {
       const $ = cheerio.load(html);
       const links = [];
-
-      $('article, .post-item, .item').each((index, el) => {
-        const title = $(el).find('h2, .entry-title, .title').text().trim();
+      
+      $('article, .post-item, .item, .bsx').each((index, el) => {
+        const title = $(el).find('h2, .entry-title, .title, .tt').text().trim();
         const href = $(el).find('a').attr('href') || '';
         if (title && href) {
           links.push({ title, href });
         }
       });
-
+      
       log(`Found ${links.length} potential matches in search results`);
-
+      
       // Filter matches containing our target episode
-      const match = findBestMatch(links, seasonNum, episodeNum);
+      const match = findBestMatch(links, seasonNum, episodeNum, tmdbType);
       if (!match) {
         log(`No matching post found for Season ${seasonNum} Episode ${episodeNum}`);
         return [];
       }
-
+      
       log(`Best match post: "${match.title}" -> ${match.href}`);
       return extractStreamsFromPost(match.href);
     });
 }
 
-function findBestMatch(links, seasonNum, episodeNum) {
-  // Match episode numbers and season numbers in post titles
-  const epPattern = new RegExp(`(ep|episode|eps|\\b)\\s*0*${episodeNum}\\b`, 'i');
+function findBestMatch(links, seasonNum, episodeNum, tmdbType) {
+  if (tmdbType === 'movie') {
+    return links[0] || null;
+  }
   
-  for (let link of links) {
-    const title = link.title.toLowerCase();
-    
-    // Kuronime titles usually contain both name and episode
-    if (epPattern.test(title)) {
-      return link;
+  // Smarter matching pattern for Indonesian WordPress episode names
+  const epPatterns = [
+    new RegExp(`(?:ep|episode|eps|\\b)\\s*0*${episodeNum}\\b`, 'i'),
+    new RegExp(`\\b0*${episodeNum}\\b`, 'i')
+  ];
+  
+  for (const pattern of epPatterns) {
+    for (const link of links) {
+      if (pattern.test(link.title)) {
+        return link;
+      }
     }
   }
-  return null;
+  return links[0] || null;
+}
+
+function isStreamHost(url) {
+  const u = url.toLowerCase();
+  return u.includes('sibnet.ru') || 
+         u.includes('vidmoly.') || 
+         u.includes('uqload.') || 
+         u.includes('voe.') || 
+         u.includes('streamtape.') || 
+         u.includes('dood.') || 
+         u.includes('filemoon.') || 
+         u.includes('sendvid.') ||
+         u.includes('megaplay.') ||
+         u.includes('lecteurvideo.') ||
+         u.includes('zencloudz.') ||
+         u.includes('younetu.');
+}
+
+function getDomainName(url) {
+  const match = url.match(/https?:\/\/([^\/]+)/i);
+  return match ? match[1] : 'Direct';
+}
+
+function resolveStreamUrl(url) {
+  // Simple Promise-based single-host resolver
+  const u = url.toLowerCase();
+  if (u.includes('sibnet.ru')) {
+    return fetch(url)
+      .then(res => res.text())
+      .then(html => {
+        const s = html.match(/file\s*:\s*["']([^"']*\.mp4[^"']*)['"]/i) ||
+                  html.match(/src\s*:\s*["']([^"']*\.mp4[^"']*)['"]/i);
+        if (s) {
+          let videoUrl = s[1];
+          if (videoUrl.startsWith('//')) videoUrl = 'https:' + videoUrl;
+          return videoUrl;
+        }
+        return url;
+      })
+      .catch(() => url);
+  } else if (u.includes('uqload.')) {
+    return fetch(url)
+      .then(res => res.text())
+      .then(html => {
+        const s = html.match(/sources\s*:\s*\[["']([^"']+\.(?:mp4|m3u8))["']\]/) ||
+                  html.match(/file\s*:\s*["']([^"']+\.(?:mp4|m3u8))["']/);
+        if (s) return s[1];
+        return url;
+      })
+      .catch(() => url);
+  }
+  return Promise.resolve(url);
 }
 
 function extractStreamsFromPost(postUrl) {
-  // Extract path and resolve on fallback IPs
   const path = postUrl.replace(/^https?:\/\/[^\/]+/, '');
-  
   return fetchPageWithFallback(path)
     .then(html => {
       const $ = cheerio.load(html);
       const streams = [];
+      const urlSet = new Set();
 
-      // Parse video elements, iframes, embed players, etc.
-      $('iframe, video source, embed').each((index, el) => {
-        let url = $(el).attr('src') || $(el).attr('value') || '';
-        if (url) {
-          if (url.startsWith('//')) url = 'https:' + url;
-          streams.push({
-            name: 'Kuronime Stream',
-            title: `Mirror ${index + 1}`,
-            url: url,
-            quality: '720p',
-            headers: {
-              'Referer': `http://${PRIMARY_IP}/`,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-          });
+      // 1. Gather all hrefs from any <a> tags
+      $('a').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        if (href && isStreamHost(href) && !urlSet.has(href)) {
+          urlSet.add(href);
+          streams.push({ url: href, label: $(el).text().trim() || 'Link' });
         }
       });
 
-      log(`Successfully resolved ${streams.length} direct streams`);
-      return streams;
+      // 2. Gather all src from any <iframe>, <embed>, <video>, or <source> tags
+      $('iframe, video, source, embed').each((i, el) => {
+        let src = $(el).attr('src') || $(el).attr('value') || $(el).attr('data-src') || '';
+        if (src) {
+          if (src.startsWith('//')) src = 'https:' + src;
+          if (isStreamHost(src) && !urlSet.has(src)) {
+            urlSet.add(src);
+            streams.push({ url: src, label: `Mirror ${i + 1}` });
+          }
+        }
+      });
+
+      // 3. Scan the entire raw HTML for any match of streaming URLs
+      const regex = /https?:\/\/[^\s"'<>\(\)]+/gi;
+      let match;
+      while ((match = regex.exec(html)) !== null) {
+        let u = match[0];
+        u = u.replace(/[.,;:\)\}\\]+$/, '');
+        if (isStreamHost(u) && !urlSet.has(u)) {
+          urlSet.add(u);
+          streams.push({ url: u, label: 'Direct Stream' });
+        }
+      }
+
+      log(`Found ${streams.length} raw streams after scanning all layers.`);
+
+      const resolvedStreams = [];
+      const resolvePromises = streams.map(s => {
+        return resolveStreamUrl(s.url)
+          .then(resolvedUrl => {
+            if (resolvedUrl) {
+              resolvedStreams.push({
+                name: `Kuronime | ${s.label}`,
+                title: `Kuronime Stream - 720p\nSource: ${getDomainName(s.url)}`,
+                url: resolvedUrl,
+                quality: '720p',
+                headers: {
+                  'Referer': `http://${PRIMARY_IP}/`,
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+              });
+            }
+          })
+          .catch(() => {});
+      });
+
+      return Promise.all(resolvePromises).then(() => {
+        log(`Successfully resolved ${resolvedStreams.length} active streams`);
+        return resolvedStreams;
+      });
     });
 }
 
 function fetchPageWithFallback(path) {
   const primaryUrl = `http://${PRIMARY_IP}${path}`;
   const fallbackUrl = `http://${FALLBACK_IP}${path}`;
-
   log(`Attempting fetch from: ${primaryUrl}`);
+  
   return fetch(primaryUrl)
     .then(res => {
       if (!res.ok) throw new Error(`Status ${res.status}`);
@@ -156,4 +246,3 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   global.getStreams = getStreams;
 }
-  
