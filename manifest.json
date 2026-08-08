@@ -1,16 +1,16 @@
-[
-  {
-    "id": "nuvio-kuro",
-    "name": "Kuronime",
-    "description": "Nonton dan Streaming Anime Subtitle Indonesia berkualitas tinggi langsung dari Kuronime.",
-    "version": "1.4.0",
-    "author": "noobjasmara",
-    "supportedTypes": ["tv", "movie"],
-    "filename": "providers/kuronime.js",
-    "enabled": true,
-    "logo": "https://raw.githubusercontent.com/noobjasmara/nuvio-kuro/main/logo.png",
-    "contentLanguage": ["id", "en"],
-    "formats": ["mp4", "mkv", "m3u8"],
-    "supportsExternalPlayer": true
-  }
-]
+{
+  "id": "nuvio-kuro",
+  "name": "Kuronime",
+  "description": "Streaming anime subtitle Indonesia langsung dari Kuronime.",
+  "version": "1.4.0",
+  "author": "noobjasmara",
+  "supportedTypes": ["movie", "tv"],
+  "filename": "providers/kuronime.js",
+  "enabled": true,
+  "logo": "https://raw.githubusercontent.com/noobjasmara/nuvio-kuro/main/logo.png",
+  "contentLanguage": ["id"],
+  "formats": ["mp4", "mkv"],
+  "limited": false,
+  "disabledPlatforms": [],
+  "supportsExternalPlayer": true
+}
