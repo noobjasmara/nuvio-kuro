@@ -4,372 +4,346 @@ const cheerio = require('cheerio-without-node-native');
 const BASE_URL = "https://154.203.162.226"; // Active Kuronime IP/Domain
 const TMDB_API_KEY = "844132b4db1b13101217e57c1d1a8123"; // Fallback TMDB key for title resolution
 
-// Traditional Promise-based helper for fetch
-function fetchJson(url) {
-  return fetch(url).then(function(res) {
-    if (!res.ok) throw new Error("HTTP error " + res.status);
-    return res.json();
-  });
-}
-
-function fetchText(url, headers) {
-  return fetch(url, { headers: headers || {} }).then(function(res) {
-    if (!res.ok) throw new Error("HTTP error " + res.status);
-    return res.text();
-  });
+/**
+ * Converts a number into Roman numerals (useful for anime seasons e.g. Youjo Senki II)
+ */
+function getRomanNumeral(num) {
+  const roman = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"];
+  return roman[num] || "";
 }
 
 /**
- * Resolves kitsu, imdb, tvdb, or tmdb IDs to canonical title and isAnime metadata
+ * Resolves a Kitsu ID to its titles and attributes
  */
-function resolveMedia(id, mediaType) {
-  const type = mediaType === "tv" ? "tv" : "movie";
-  
-  // 1. Kitsu ID
-  if (typeof id === 'string' && id.startsWith('kitsu:')) {
-    const kitsuId = id.split(':')[1];
-    return fetchJson("https://kitsu.io/api/edge/anime/" + kitsuId)
-      .then(function(json) {
-        const attr = json.data.attributes;
-        const title = attr.canonicalTitle || attr.titles.en || attr.titles.en_jp;
-        return {
-          tmdbId: null,
-          title: title.replace(/[:\-–—()]/g, ' ').replace(/\s+/g, ' ').trim(),
-          isAnime: true
-        };
-      });
-  }
+function fetchKitsuMetadata(kitsuId) {
+  const kitsuUrl = `https://kitsu.io/api/edge/anime/${kitsuId}`;
+  return fetch(kitsuUrl)
+    .then(res => res.ok ? res.json() : null)
+    .then(data => {
+      const anime = data && data.data && data.data.attributes;
+      if (!anime) return null;
 
-  // 2. IMDb ID
-  if (typeof id === 'string' && id.startsWith('tt')) {
-    return fetchJson("https://api.themoviedb.org/3/find/" + id + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id")
-      .then(function(json) {
-        const result = mediaType === 'tv' ? json.tv_results[0] : json.movie_results[0];
-        if (!result) throw new Error("Not found via IMDb find");
-        return {
-          tmdbId: result.id,
-          title: (result.original_name || result.original_title || result.name || result.title).replace(/[:\-–—()]/g, ' ').replace(/\s+/g, ' ').trim(),
-          isAnime: (result.original_language === 'ja')
-        };
-      });
-  }
-
-  // 3. Numeric ID (Try TVDB find first, then TMDB direct)
-  return fetch("https://api.themoviedb.org/3/find/" + id + "?api_key=" + TMDB_API_KEY + "&external_source=tvdb_id")
-    .then(function(res) {
-      if (!res.ok) return null;
-      return res.json();
-    })
-    .then(function(json) {
-      const result = json && json.tv_results && json.tv_results[0];
-      if (result) {
-        console.log("[Kuronime] Resolved TVDB ID " + id + " -> TMDB ID " + result.id);
-        return {
-          tmdbId: result.id,
-          title: (result.original_name || result.original_title || result.name || result.title).replace(/[:\-–—()]/g, ' ').replace(/\s+/g, ' ').trim(),
-          isAnime: (result.original_language === 'ja')
-        };
+      const titles = [];
+      if (anime.canonicalTitle) titles.push(anime.canonicalTitle);
+      if (anime.titles) {
+        if (anime.titles.en) titles.push(anime.titles.en);
+        if (anime.titles.en_jp) titles.push(anime.titles.en_jp);
       }
-      
-      // Fallback: Assume it's already a TMDB ID
-      return fetchJson("https://api.themoviedb.org/3/" + type + "/" + id + "?api_key=" + TMDB_API_KEY)
-        .then(function(data) {
-          return {
-            tmdbId: data.id,
-            title: (data.original_name || data.original_title || data.name || data.title).replace(/[:\-–—()]/g, ' ').replace(/\s+/g, ' ').trim(),
-            isAnime: (data.original_language === 'ja' || (data.genres || []).some(function(g) { return g.id === 16; }))
-          };
-        });
-    });
+      return { titles, isAnime: true };
+    })
+    .catch(() => null);
 }
 
 /**
- * Resolves seasonal split anime titles and relative episode numbers via AniZip & AniList
+ * Resolves TMDB TV season details (like Season Name)
  */
-function resolveSeasonalTitleAndEpisode(tmdbId, season, episode) {
-  if (!tmdbId || !season || season === 1) {
-    return Promise.resolve({ titles: null, episode: episode });
+function fetchTMDBSeasonName(tmdbId, season) {
+  const seasonUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season}?api_key=${TMDB_API_KEY}&language=en-US`;
+  return fetch(seasonUrl)
+    .then(res => res.ok ? res.json() : null)
+    .then(data => data ? data.name : null)
+    .catch(() => null);
+}
+
+/**
+ * Fetches TMDB Main TV show details & Alternative titles
+ */
+function fetchTMDBMetadata(tmdbId, mediaType, season) {
+  const type = mediaType === "tv" ? "tv" : "movie";
+  const mainUrl = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+  const altUrl = `https://api.themoviedb.org/3/${type}/${tmdbId}/alternative_titles?api_key=${TMDB_API_KEY}`;
+
+  return Promise.all([
+    fetch(mainUrl).then(res => res.ok ? res.json() : null),
+    fetch(altUrl).then(res => res.ok ? res.json() : null)
+  ]).then(([mainData, altData]) => {
+    if (!mainData) return null;
+
+    const titles = [];
+    const mainTitle = mainData.name || mainData.title || mainData.original_name || mainData.original_title;
+    if (mainTitle) titles.push(mainTitle);
+    if (mainData.original_name) titles.push(mainData.original_name);
+    if (mainData.original_title) titles.push(mainData.original_title);
+
+    if (altData && altData.results) {
+      altData.results.forEach(item => {
+        if (item.title) titles.push(item.title);
+      });
+    }
+
+    // If it is a TV show and season > 1, let's fetch the season name to solve split season issues
+    if (mediaType === "tv" && season > 1) {
+      return fetchTMDBSeasonName(tmdbId, season)
+        .then(seasonName => {
+          return { mainTitle, titles, seasonName };
+        });
+    }
+
+    return { mainTitle, titles, seasonName: null };
+  });
+}
+
+/**
+ * Generates highly targeted search queries for Kuronime using our metadata
+ */
+function generateSearchQueries(meta, season) {
+  const queries = [];
+  const main = meta.mainTitle;
+
+  if (season > 1) {
+    const roman = getRomanNumeral(season);
+    
+    // 1. If we have a specific season name (e.g., "Thousand-Year Blood War")
+    if (meta.seasonName && meta.seasonName !== `Season ${season}`) {
+      queries.push(`${main} ${meta.seasonName}`);
+      queries.push(meta.seasonName); // Sometimes the site lists it directly as the season subtitle
+    }
+
+    // 2. Standard seasonal naming conventions
+    queries.push(`${main} Season ${season}`);
+    queries.push(`${main} ${roman}`);
+    queries.push(`${main} S${season}`);
   }
 
-  const url = "https://api.ani.zip/v1/anime?tmdb_id=" + tmdbId;
-  return fetch(url)
-    .then(function(res) {
-      if (!res.ok) throw new Error("AniZip API status: " + res.status);
-      return res.json();
-    })
-    .then(function(data) {
-      if (!data || !data.episodes) return { titles: null, episode: episode };
-      
-      let matchedEpisode = null;
-      for (const key in data.episodes) {
-        const ep = data.episodes[key];
-        if (ep.season === season && ep.episode === episode) {
-          matchedEpisode = ep;
-          break;
+  // 3. Fallbacks to alt titles
+  meta.titles.forEach(t => {
+    if (season > 1) {
+      queries.push(`${t} Season ${season}`);
+      queries.push(`${t} ${getRomanNumeral(season)}`);
+    } else {
+      queries.push(t);
+    }
+  });
+
+  // Unique entries only
+  return Array.from(new Set(queries)).filter(q => q.trim().length > 0);
+}
+
+/**
+ * Scores how well a search result matches our expected anime metadata
+ */
+function scoreSearchResult(resultTitle, meta, season) {
+  const title = resultTitle.toLowerCase();
+  const mainTitleLower = meta.mainTitle.toLowerCase();
+  let score = 0;
+
+  // Exact or contains match on the main title
+  if (title.includes(mainTitleLower)) {
+    score += 10;
+  }
+
+  if (season > 1) {
+    const roman = getRomanNumeral(season).toLowerCase();
+    const seasonStr = `season ${season}`;
+    const sStr = `s${season}`;
+
+    // Specific Season subtitle match (e.g. "sennen kessen" or "thousand-year")
+    if (meta.seasonName) {
+      const seasonNameLower = meta.seasonName.toLowerCase();
+      if (title.includes(seasonNameLower)) score += 30;
+      // Partial keyword matches (e.g. "kessen" or "blood war")
+      const keywords = seasonNameLower.split(' ').filter(w => w.length > 3);
+      keywords.forEach(kw => {
+        if (title.includes(kw)) score += 10;
+      });
+    }
+
+    if (title.includes(seasonStr)) score += 25;
+    if (title.includes(` ${roman}`) || title.endsWith(` ${roman}`)) score += 25;
+    if (title.includes(sStr)) score += 20;
+
+    // Check if the result has other season numbers to avoid matching the wrong season
+    for (let i = 1; i <= 10; i++) {
+      if (i !== season) {
+        const otherRoman = ` ${getRomanNumeral(i).toLowerCase()}`;
+        if (title.includes(`season ${i}`) || (otherRoman.trim().length > 0 && title.includes(otherRoman))) {
+          score -= 40; // Heavy penalty for matching the wrong season
         }
       }
-
-      if (!matchedEpisode) {
-        console.log("[Kuronime] No AniZip episode match for S" + season + "E" + episode);
-        return { titles: null, episode: episode };
-      }
-
-      const anilistId = matchedEpisode.anilistId;
-      if (!anilistId) {
-        console.log("[Kuronime] Found AniZip match, but no AniList ID. Fallback absolute episode: " + matchedEpisode.absoluteEpisodeNumber);
-        return { titles: null, episode: matchedEpisode.absoluteEpisodeNumber || episode };
-      }
-
-      console.log("[Kuronime] AniZip mapped S" + season + "E" + episode + " to AniList ID: " + anilistId);
-
-      const gqlQuery = 'query ($id: Int) { Media (id: $id, type: ANIME) { title { romaji english native } } }';
-
-      return fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          query: gqlQuery,
-          variables: { id: anilistId }
-        })
-      })
-      .then(function(res) {
-        if (!res.ok) throw new Error("AniList GraphQL returned status: " + res.status);
-        return res.json();
-      })
-      .then(function(gqlJson) {
-        const media = gqlJson && gqlJson.data && gqlJson.data.Media;
-        if (!media || !media.title) return { titles: null, episode: matchedEpisode.absoluteEpisodeNumber || episode };
-
-        const titles = [
-          media.title.romaji,
-          media.title.english,
-          media.title.native
-        ].filter(Boolean).map(function(t) {
-          return t.replace(/[:\-–—()]/g, ' ').replace(/\s+/g, ' ').trim();
-        });
-
-        console.log("[Kuronime] Resolved AniList titles: " + titles.join(' | '));
-        
-        const relativeEpisode = matchedEpisode.episode || episode;
-        console.log("[Kuronime] AniList split relative episode: " + relativeEpisode);
-
-        return {
-          titles: titles,
-          episode: relativeEpisode
-        };
-      })
-      .catch(function(err) {
-        console.error("[Kuronime] AniList title resolution error:", err.message);
-        return { titles: null, episode: matchedEpisode.absoluteEpisodeNumber || episode };
-      });
-    })
-    .catch(function(err) {
-      console.error("[Kuronime] AniZip resolution error:", err.message);
-      return { titles: null, episode: episode };
-    });
-}
-
-/**
- * Programmatically generates search queries based on season or specific anime titles
- */
-function getSearchQueries(baseTitle, season, animeTitles) {
-  if (animeTitles && animeTitles.length > 0) {
-    return animeTitles;
-  }
-  if (!season || season === 1) {
-    return [baseTitle];
-  }
-  const romanNumerals = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"];
-  const roman = romanNumerals[season] || "";
-  
-  const list = [];
-  if (roman) list.push(baseTitle + " " + roman);
-  list.push(baseTitle + " Season " + season);
-  list.push(baseTitle + " S" + season);
-  list.push(baseTitle);
-  return list;
-}
-
-/**
- * Searches Kuronime sequentially using search query candidates
- */
-function searchKuronime(queries, index) {
-  if (index >= queries.length) {
-    return Promise.resolve(null);
-  }
-
-  const query = queries[index];
-  console.log("[Kuronime] Attempting search for: " + query + " (index " + index + ")");
-  const searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-
-  return fetchText(searchUrl, {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-  })
-  .then(function(html) {
-    const $ = cheerio.load(html);
-    let animeUrl = null;
-
-    // Parse WordPress search results (Muvipro theme uses h4 elements for titles)
-    $('h4 a').each(function(i, element) {
-      const resultTitle = $(element).text().trim().toLowerCase();
-      const href = $(element).attr('href');
-
-      // Check if result title matches our search candidates
-      const isMatch = queries.some(function(term) {
-        const t = term.toLowerCase();
-        return resultTitle.includes(t) || t.includes(resultTitle);
-      });
-
-      if (isMatch && href) {
-        animeUrl = href;
-        return false; // Break cheerio loop
-      }
-    });
-
-    if (animeUrl) {
-      console.log("[Kuronime] Found search match: " + animeUrl);
-      return animeUrl;
     }
-
-    // If not found, try next query
-    return searchKuronime(queries, index + 1);
-  })
-  .catch(function(err) {
-    console.error("[Kuronime] Search error for " + query + ":", err.message);
-    return searchKuronime(queries, index + 1);
-  });
-}
-
-/**
- * Finds specific episode page inside a show's main catalog page on Kuronime
- */
-function findEpisodePage(animeUrl, episode, targetEpisodeNumber) {
-  return fetchText(animeUrl, {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-  })
-  .then(function(mainPageHtml) {
-    const $main = cheerio.load(mainPageHtml);
-    let targetEpisodeUrl = null;
-
-    // Search link texts
-    $main('.muvipro-episode-list a, .episode-list a, .eps-list a, a').each(function(i, element) {
-      const linkText = $main(element).text().trim().toLowerCase();
-      const href = $main(element).attr('href');
-
-      // Match "Episode X" or "Eps X" or "Ep X" or standalone number X
-      const epsRegex = new RegExp('\\b(eps|ep|episode|epsode)\\b\\s*' + targetEpisodeNumber + '\\b|\\b' + targetEpisodeNumber + '\\b');
-      if (epsRegex.test(linkText) && href && href.includes('episode')) {
-        targetEpisodeUrl = href;
-        return false; // Found exact match, break loop
-      }
+  } else {
+    // For Season 1, penalize multi-season sequels
+    const multiSeasonKeywords = ["season 2", "season 3", "season 4", " ii", " iii", " iv"];
+    multiSeasonKeywords.forEach(kw => {
+      if (title.includes(kw)) score -= 30;
     });
+  }
 
-    // Fallback: If link not found, try generating standard slug
-    if (!targetEpisodeUrl) {
-      const slug = animeUrl.replace(/\/$/, "").split("/").pop();
-      targetEpisodeUrl = BASE_URL + "/" + slug + "-episode-" + targetEpisodeNumber + "/";
-      console.log("[Kuronime] Episode list match failed. Standardizing fallback slug: " + targetEpisodeUrl);
-    } else {
-      console.log("[Kuronime] Discovered exact episode URL: " + targetEpisodeUrl);
-    }
-
-    return targetEpisodeUrl;
-  });
+  return score;
 }
 
 /**
- * Extracts iframe play urls from target episode page
+ * Main Nuvio Provider function
  */
-function extractStreams(pageUrl) {
-  return fetchText(pageUrl, {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-  })
-  .then(function(html) {
-    const $ = cheerio.load(html);
-    const streams = [];
+function getStreams(id, mediaType, season, episode) {
+  console.log(`[Kuronime] Starting resolution for ID: ${id} | Season: ${season} | Episode: ${episode}`);
 
-    // Scrape players (iframe elements, select options, or video sources)
-    $('iframe, select option, source').each(function(index, element) {
-      let src = $(element).attr('src') || $(element).attr('value') || $(element).attr('data-src');
-      if (src && (src.includes('m3u8') || src.includes('embed') || src.includes('player') || src.includes('stream'))) {
-        if (src.startsWith('//')) src = 'https:' + src;
+  let isKitsu = false;
+  let kitsuId = null;
+  let numericId = id;
 
-        streams.push({
-          name: "Kuronime",
-          title: "Server " + (index + 1) + " (Sub Indo)",
-          url: src,
-          quality: "720p",
-          headers: {
-            "Referer": BASE_URL,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          }
-        });
-      }
-    });
+  if (typeof id === 'string' && id.startsWith('kitsu:')) {
+    isKitsu = true;
+    kitsuId = id.split(':')[1];
+  }
 
-    console.log("[Kuronime] Extraction complete. Found " + streams.length + " streams.");
-    return streams;
-  });
-}
+  const metadataPromise = isKitsu 
+    ? fetchKitsuMetadata(kitsuId)
+    : fetchTMDBMetadata(numericId, mediaType, season);
 
-/**
- * Main getStreams interface
- */
-function getStreams(tmdbId, mediaType, season, episode) {
-  console.log("[Kuronime] Initializing resolver for ID: " + tmdbId + " (" + mediaType + ")");
-
-  return resolveMedia(tmdbId, mediaType)
-    .then(function(media) {
-      if (!media) {
-        console.log("[Kuronime] Metadata resolution failed. Search aborted.");
+  return metadataPromise
+    .then(meta => {
+      if (!meta) {
+        console.log("[Kuronime] Metadata could not be fetched.");
         return [];
       }
 
-      console.log("[Kuronime] Resolved Title: " + media.title + " | isAnime: " + media.isAnime);
+      // If Kitsu resolved but has no mainTitle, synthesize one
+      if (!meta.mainTitle && meta.titles && meta.titles.length > 0) {
+        meta.mainTitle = meta.titles[0];
+      }
 
-      // Resolve seasonal mapping if it's anime and season > 1
-      const isAnimeTv = media.isAnime && mediaType === "tv" && season && season > 1;
-      const seasonalPromise = isAnimeTv 
-        ? resolveSeasonalTitleAndEpisode(media.tmdbId, season, episode)
-        : Promise.resolve({ titles: null, episode: episode });
+      console.log(`[Kuronime] Mapped Title: "${meta.mainTitle}" | Season Name: "${meta.seasonName || 'N/A'}"`);
 
-      return seasonalPromise.then(function(resolvedMapping) {
-        const targetEpisodeNumber = resolvedMapping.episode;
-        const searchQueries = getSearchQueries(media.title, season, resolvedMapping.titles);
+      const searchQueries = generateSearchQueries(meta, season);
+      console.log(`[Kuronime] Generated Search Queries:`, searchQueries);
 
-        console.log("[Kuronime] Search queries candidates: " + searchQueries.join(" | "));
-        console.log("[Kuronime] Target episode number: " + targetEpisodeNumber);
+      // Execute search queries in parallel to get the best matching page quickly
+      const searchPromises = searchQueries.slice(0, 3).map(query => {
+        const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(query)}`;
+        return fetch(searchUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+        })
+        .then(res => res.ok ? res.text() : "")
+        .then(html => {
+          if (!html) return [];
+          const $ = cheerio.load(html);
+          const results = [];
 
-        return searchKuronime(searchQueries, 0)
-          .then(function(animeUrl) {
-            if (!animeUrl) {
-              console.log("[Kuronime] No match found on Kuronime search.");
-              return [];
+          $('h4 a').each((i, el) => {
+            const title = $(el).text().trim();
+            const href = $(el).attr('href');
+            if (title && href) {
+              results.push({ title, href });
             }
-
-            const targetPagePromise = mediaType === "tv"
-              ? findEpisodePage(animeUrl, episode, targetEpisodeNumber)
-              : Promise.resolve(animeUrl);
-
-            return targetPagePromise.then(function(targetPageUrl) {
-              console.log("[Kuronime] Fetching and extracting stream links from: " + targetPageUrl);
-              return extractStreams(targetPageUrl);
-            });
           });
+          return results;
+        })
+        .catch(() => []);
       });
+
+      return Promise.all(searchPromises)
+        .then(allResults => {
+          // Flatten results
+          const mergedResults = [].concat(...allResults);
+          if (mergedResults.length === 0) {
+            console.log("[Kuronime] No search results returned from site.");
+            return [];
+          }
+
+          // Score and rank search results
+          let bestPage = null;
+          let highestScore = -999;
+
+          mergedResults.forEach(item => {
+            const score = scoreSearchResult(item.title, meta, season);
+            console.log(`[Kuronime] Candidate: "${item.title}" | Score: ${score}`);
+            if (score > highestScore && score > 0) {
+              highestScore = score;
+              bestPage = item;
+            }
+          });
+
+          if (!bestPage) {
+            console.log("[Kuronime] No candidates passed the matching threshold.");
+            return [];
+          }
+
+          console.log(`[Kuronime] Best Match: "${bestPage.title}" (${bestPage.href}) with score ${highestScore}`);
+
+          // Determine if the matched page is a separate split season
+          const matchedTitleLower = bestPage.title.toLowerCase();
+          const isSplitSeason = season > 1 && (
+            matchedTitleLower.includes("season") || 
+            matchedTitleLower.includes(` ${getRomanNumeral(season).toLowerCase()}`) ||
+            (meta.seasonName && matchedTitleLower.includes(meta.seasonName.toLowerCase()))
+          );
+
+          // If it is a split season, episode numbering on the page starts back at 1!
+          const targetEpisode = isSplitSeason ? episode : episode; 
+          // Note: In Nuvio, the "episode" passed is already the relative episode number in that season.
+          // Therefore, for split-season pages, we look for "episode" directly (e.g. Eps 1, Eps 2 etc.)
+
+          console.log(`[Kuronime] Target Episode to search inside page: ${targetEpisode}`);
+
+          if (mediaType === "tv") {
+            return fetch(bestPage.href)
+              .then(res => res.text())
+              .then(mainHtml => {
+                const $main = cheerio.load(mainHtml);
+                let targetEpisodeUrl = null;
+
+                // Look for links matching the episode number inside the list
+                $main('.muvipro-episode-list a, .episode-list a, .eps-list a, a').each((index, element) => {
+                  const linkText = $main(element).text().trim().toLowerCase();
+                  const href = $main(element).attr('href');
+
+                  // Look for words like "eps X", "ep X", "episode X", "epsode X" or exact number matches
+                  const epsRegex = new RegExp(`\\b(eps|ep|episode|epsode)\\b\\s*${targetEpisode}\\b|\\b${targetEpisode}\\b`);
+                  if (epsRegex.test(linkText) && href && href.includes('episode')) {
+                    targetEpisodeUrl = href;
+                    return false; // Break loop
+                  }
+                });
+
+                // Fallback to manual slug structure matching if page parser misses it
+                if (!targetEpisodeUrl) {
+                  const slug = bestPage.href.replace(/\/$/, "").split("/").pop();
+                  targetEpisodeUrl = `${BASE_URL}/${slug}-episode-${targetEpisode}/`;
+                  console.log(`[Kuronime] Standard episode match failed. Trying fallback slug: ${targetEpisodeUrl}`);
+                } else {
+                  console.log(`[Kuronime] Found exact episode page: ${targetEpisodeUrl}`);
+                }
+
+                return fetch(targetEpisodeUrl).then(res => res.ok ? res.text() : "");
+              });
+          }
+
+          // Movie matches can be parsed directly on the detail page
+          return fetch(bestPage.href).then(res => res.ok ? res.text() : "");
+        })
+        .then(episodeHtml => {
+          if (!episodeHtml) return [];
+          const $ = cheerio.load(episodeHtml);
+          const streams = [];
+
+          // Scrape embedded players (iframe elements, select options, or source tags)
+          $('iframe, select option, source').each((index, element) => {
+            let src = $(element).attr('src') || $(element).attr('value') || $(element).attr('data-src');
+            if (src && (src.includes('m3u8') || src.includes('embed') || src.includes('player') || src.includes('stream'))) {
+              if (src.startsWith('//')) src = 'https:' + src;
+
+              streams.push({
+                name: "Kuronime",
+                title: `Server ${index + 1} (Sub Indo)`,
+                url: src,
+                quality: "720p",
+                headers: {
+                  "Referer": BASE_URL,
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                }
+              });
+            }
+          });
+
+          console.log(`[Kuronime] Playback streams resolved: ${streams.length} links discovered.`);
+          return streams;
+        });
     })
-    .catch(function(error) {
-      console.error("[Kuronime] Resolver caught an error:", error.message);
+    .catch(error => {
+      console.error('[Kuronime] Scraper pipeline error:', error.message);
       return [];
     });
 }
 
-// React Native / Hermes module registration compatibility
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { getStreams: getStreams };
-} else {
-  global.getStreams = getStreams;
-}
+module.exports = { getStreams };
